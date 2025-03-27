@@ -9,6 +9,10 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/adc.h"
+#include "esp_adc/adc_oneshot.h"
+#include "esp_adc/adc_cali.h"
+#include "esp_adc/adc_cali_scheme.h"
 
 // Определение тега для логов
 static const char* TAG = "SERVO_CONTROL";
@@ -29,6 +33,12 @@ static const char* TAG = "SERVO_CONTROL";
 #define ANGLE_OPEN   90   // Открыто - 90 градусов
 #define ANGLE_VENT   180  // Проветривание - 180 градусов
 
+// Определения для ADC измерения тока
+#define SERVO_CURRENT_ADC_UNIT     ADC_UNIT_1           // Блок АЦП (ADC1)
+#define SERVO_CURRENT_ADC_CHANNEL  ADC_CHANNEL_0        // Канал ADC (GPIO36)
+#define SERVO_CURRENT_ADC_ATTEN    ADC_ATTEN_DB_11      // Ослабление (0-3.3В)
+#define SERVO_CURRENT_ADC_WIDTH    ADC_BITWIDTH_12      // Разрядность (12 бит)
+
 // Структура для хранения состояния сервоприводов
 typedef struct {
     mcpwm_timer_handle_t timer;               // Таймер MCPWM
@@ -48,6 +58,11 @@ static window_mode_t current_window_mode = WINDOW_MODE_CLOSED;  // Текущи�
 static uint8_t current_gap_percentage = 0;                      // Текущий процент зазора
 static uint16_t resistance_threshold = DEFAULT_RESISTANCE_THRESHOLD; // Порог сопротивления
 static bool resistance_detected = false;                        // Флаг обнаружения сопротивления
+
+// Добавляем переменные для ADC
+static adc_oneshot_unit_handle_t adc1_handle;
+static adc_cali_handle_t adc1_cali_handle;
+static bool adc_cali_enabled = false;
 
 // Прототипы вспомогательных функций
 static esp_err_t setup_servo(servo_t *servo, uint8_t gpio_pin);
@@ -76,6 +91,13 @@ esp_err_t servo_init(uint8_t handle_servo_pin, uint8_t gap_servo_pin)
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "Ошибка инициализации сервопривода зазора");
         return ret;
+    }
+    
+    // Инициализация ADC для измерения тока
+    ret = init_adc_for_current_sensing();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Не удалось инициализировать ADC для измерения тока: %s", esp_err_to_name(ret));
+        // Продолжаем работу, но без функции измерения тока
     }
     
     // Установка начальных значений
@@ -340,16 +362,135 @@ esp_err_t servo_set_resistance_threshold(uint16_t threshold)
 }
 
 /**
+ * @brief Функция инициализации ADC для измерения тока
+ */
+static esp_err_t init_adc_for_current_sensing(void)
+{
+    ESP_LOGI(TAG, "Инициализация ADC для измерения тока сервопривода");
+    
+    // Конфигурация ADC
+    adc_oneshot_unit_init_cfg_t init_config = {
+        .unit_id = SERVO_CURRENT_ADC_UNIT,
+    };
+    
+    ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config, &adc1_handle));
+    
+    // Конфигурация канала ADC
+    adc_oneshot_chan_cfg_t chan_cfg = {
+        .atten = SERVO_CURRENT_ADC_ATTEN,
+        .bitwidth = SERVO_CURRENT_ADC_WIDTH,
+    };
+    
+    ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle, SERVO_CURRENT_ADC_CHANNEL, &chan_cfg));
+    
+    // Попытка калибровки ADC для более точных измерений
+    adc_cali_curve_fitting_config_t cali_config = {
+        .unit_id = SERVO_CURRENT_ADC_UNIT,
+        .atten = SERVO_CURRENT_ADC_ATTEN,
+        .bitwidth = SERVO_CURRENT_ADC_WIDTH,
+    };
+    
+    esp_err_t ret = adc_cali_create_scheme_curve_fitting(&cali_config, &adc1_cali_handle);
+    if (ret == ESP_OK) {
+        adc_cali_enabled = true;
+        ESP_LOGI(TAG, "Калибровка ADC включена");
+    } else {
+        ESP_LOGW(TAG, "Калибровка ADC невозможна, будут использоваться сырые значения");
+        adc_cali_enabled = false;
+    }
+    
+    return ESP_OK;
+}
+
+/**
+ * @brief Реализация чтения с датчика тока
+ * 
+ * В реальном устройстве эта функция использует ADC для чтения
+ * значения с датчика тока.
+ * 
+ * @return uint16_t Значение тока (0-4095)
+ */
+static uint16_t read_current_sensor(void)
+{
+    int adc_raw = 0;
+    int voltage = 0;
+    
+    // Если ADC не инициализирован, возвращаем значение ниже порога
+    if (adc1_handle == NULL) {
+        ESP_LOGD(TAG, "ADC не инициализирован, возвращаем значение по умолчанию");
+        return 1000; // Значение ниже порога сопротивления
+    }
+    
+    // Получение сырого значения ADC
+    esp_err_t ret = adc_oneshot_read(adc1_handle, SERVO_CURRENT_ADC_CHANNEL, &adc_raw);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Ошибка чтения ADC: %s", esp_err_to_name(ret));
+        return 1000; // Значение ниже порога сопротивления
+    }
+    
+    // Если калибровка включена, преобразуем в милливольты
+    if (adc_cali_enabled) {
+        ret = adc_cali_raw_to_voltage(adc1_cali_handle, adc_raw, &voltage);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Ошибка преобразования сырого значения в напряжение: %s", esp_err_to_name(ret));
+        }
+        ESP_LOGD(TAG, "Ток сервопривода: %d мВ", voltage);
+    } else {
+        ESP_LOGD(TAG, "Ток сервопривода (сырое значение): %d", adc_raw);
+    }
+    
+    // Преобразование напряжения в ток (зависит от используемого датчика тока)
+    // В этом примере предполагается, что у нас есть датчик тока,
+    // который выдает линейное напряжение, пропорциональное току
+    
+    // Для демонстрации просто возвращаем сырое значение
+    return (uint16_t)adc_raw;
+}
+
+/**
  * @brief Проверка на наличие механического сопротивления
  * 
- * Примечание: В реальном устройстве здесь будет чтение значения с датчика тока
- * и сравнение его с пороговым значением. Для демонстрации используется заглушка.
+ * Чтение значения с датчика тока и сравнение его с пороговым значением.
  */
 bool servo_check_resistance(void)
 {
-    // В реальном устройстве здесь будет чтение с датчика тока/напряжения
-    // Для демонстрации возвращаем значение флага, установленного в других функциях
-    return resistance_detected;
+    ESP_LOGD(TAG, "Проверка механического сопротивления");
+    
+    // Чтение значения тока с датчика
+    uint16_t current_value = read_current_sensor();
+    
+    // Если установлен флаг принудительной симуляции, возвращаем true
+    if (resistance_detected) {
+        ESP_LOGW(TAG, "Симуляция сопротивления активна");
+        return true;
+    }
+    
+    // Проверка превышения порога
+    if (current_value > resistance_threshold) {
+        ESP_LOGW(TAG, "Обнаружено сопротивление! Значение тока: %d, порог: %d", 
+                 current_value, resistance_threshold);
+        resistance_detected = true;
+        return true;
+    }
+    
+    resistance_detected = false;
+    return false;
+}
+
+/**
+ * @brief Включение режима симуляции сопротивления для тестирования
+ * 
+ * @param enable Включить/выключить симуляцию сопротивления
+ */
+void servo_simulate_resistance(bool enable)
+{
+    if (enable) {
+        ESP_LOGW(TAG, "Включен режим симуляции сопротивления");
+        resistance_detected = true;
+    } else {
+        ESP_LOGI(TAG, "Отключен режим симуляции сопротивления");
+        resistance_detected = false;
+    }
 }
 
 /**
@@ -431,5 +572,94 @@ esp_err_t servo_calibrate(void)
     
     ESP_LOGI(TAG, "Калибровка завершена успешно");
     
+    return ESP_OK;
+}
+
+/**
+ * @brief Освобождение ресурсов ADC
+ * 
+ * Эта функция должна вызываться при остановке работы устройства
+ * для корректного освобождения ресурсов ADC.
+ * 
+ * @return esp_err_t ESP_OK в случае успеха
+ */
+esp_err_t servo_deinit(void)
+{
+    ESP_LOGI(TAG, "Деинициализация модуля сервоприводов");
+    
+    // Отключение сервоприводов
+    esp_err_t ret = servo_disable();
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Ошибка отключения сервоприводов: %s", esp_err_to_name(ret));
+    }
+    
+    // Освобождение ресурсов ADC
+    if (adc1_handle != NULL) {
+        ESP_LOGI(TAG, "Освобождение ресурсов ADC");
+        
+        // Удаление калибровки ADC
+        if (adc_cali_enabled && adc1_cali_handle != NULL) {
+            ret = adc_cali_delete_scheme_curve_fitting(adc1_cali_handle);
+            if (ret != ESP_OK) {
+                ESP_LOGW(TAG, "Ошибка удаления калибровки ADC: %s", esp_err_to_name(ret));
+            }
+            adc1_cali_handle = NULL;
+            adc_cali_enabled = false;
+        }
+        
+        // Удаление блока ADC
+        ret = adc_oneshot_del_unit(adc1_handle);
+        if (ret != ESP_OK) {
+            ESP_LOGW(TAG, "Ошибка удаления блока ADC: %s", esp_err_to_name(ret));
+        }
+        adc1_handle = NULL;
+    }
+    
+    // Освобождение ресурсов MCPWM для сервоприводов
+    if (handle_servo.timer != NULL) {
+        ESP_LOGI(TAG, "Освобождение ресурсов сервопривода ручки");
+        
+        if (handle_servo.generator != NULL) {
+            mcpwm_del_generator(handle_servo.generator);
+            handle_servo.generator = NULL;
+        }
+        
+        if (handle_servo.comparator != NULL) {
+            mcpwm_del_comparator(handle_servo.comparator);
+            handle_servo.comparator = NULL;
+        }
+        
+        if (handle_servo.operator != NULL) {
+            mcpwm_del_operator(handle_servo.operator);
+            handle_servo.operator = NULL;
+        }
+        
+        mcpwm_del_timer(handle_servo.timer);
+        handle_servo.timer = NULL;
+    }
+    
+    if (gap_servo.timer != NULL) {
+        ESP_LOGI(TAG, "Освобождение ресурсов сервопривода зазора");
+        
+        if (gap_servo.generator != NULL) {
+            mcpwm_del_generator(gap_servo.generator);
+            gap_servo.generator = NULL;
+        }
+        
+        if (gap_servo.comparator != NULL) {
+            mcpwm_del_comparator(gap_servo.comparator);
+            gap_servo.comparator = NULL;
+        }
+        
+        if (gap_servo.operator != NULL) {
+            mcpwm_del_operator(gap_servo.operator);
+            gap_servo.operator = NULL;
+        }
+        
+        mcpwm_del_timer(gap_servo.timer);
+        gap_servo.timer = NULL;
+    }
+    
+    ESP_LOGI(TAG, "Модуль сервоприводов успешно деинициализирован");
     return ESP_OK;
 } 

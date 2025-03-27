@@ -87,4 +87,18 @@ esp_err_t servo_disable(void);
  */
 esp_err_t servo_calibrate(void);
 
+/**
+ * @brief Включение режима симуляции сопротивления для тестирования
+ * 
+ * @param enable Включить/выключить симуляцию сопротивления
+ */
+void servo_simulate_resistance(bool enable);
+
+/**
+ * @brief Освобождение ресурсов модуля сервоприводов
+ * 
+ * @return esp_err_t ESP_OK при успешной деинициализации
+ */
+esp_err_t servo_deinit(void);
+
 #endif /* SERVO_CONTROL_H */ 

@@ -1,127 +1,140 @@
 /**
  * @file zigbee_handler.h
- * @brief Обработчик ZigBee для умного окна
+ * @brief Заголовочный файл обработчика ZigBee для умного окна
+ * @version 1.0
+ * @date 2023-03-26
  */
 
 #ifndef ZIGBEE_HANDLER_H
 #define ZIGBEE_HANDLER_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include "esp_err.h"
-#include "servo_control.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /**
- * @brief Состояние ZigBee
+ * @brief Состояния подключения ZigBee
  */
 typedef enum {
-    ZIGBEE_STATE_DISCONNECTED = 0,  ///< Не подключен к сети
-    ZIGBEE_STATE_CONNECTING = 1,    ///< В процессе подключения
-    ZIGBEE_STATE_CONNECTED = 2      ///< Подключен к сети
+    ZIGBEE_STATE_DISCONNECTED,  // Не подключен к сети
+    ZIGBEE_STATE_CONNECTING,    // В процессе подключения
+    ZIGBEE_STATE_CONNECTED      // Подключен к сети
 } zigbee_state_t;
 
 /**
- * @brief Тип устройства ZigBee
+ * @brief Типы устройств ZigBee
  */
 typedef enum {
-    ZIGBEE_DEVICE_TYPE_COVER = 0,  ///< Тип "умные шторы" для Яндекс Алисы
-    ZIGBEE_DEVICE_TYPE_WINDOW = 1  ///< Тип "окно" (для будущего использования)
+    ZIGBEE_DEVICE_TYPE_LIGHT,   // Освещение
+    ZIGBEE_DEVICE_TYPE_SWITCH,  // Выключатель
+    ZIGBEE_DEVICE_TYPE_SENSOR,  // Датчик
+    ZIGBEE_DEVICE_TYPE_COVER    // Шторы/жалюзи/окна
 } zigbee_device_type_t;
 
 /**
- * @brief Тип уведомления ZigBee
+ * @brief Типы уведомлений
  */
 typedef enum {
-    ZIGBEE_ALERT_RESISTANCE = 0,   ///< Уведомление о механическом сопротивлении
-    ZIGBEE_ALERT_LOW_BATTERY = 1,  ///< Уведомление о низком заряде батареи
-    ZIGBEE_ALERT_MODE_CHANGE = 2   ///< Уведомление об изменении режима
+    ZIGBEE_ALERT_LOW_BATTERY,   // Низкий заряд батареи
+    ZIGBEE_ALERT_RESISTANCE,    // Механическое сопротивление
+    ZIGBEE_ALERT_MODE_CHANGE,   // Изменение режима
+    ZIGBEE_ALERT_PROTECTION     // Сработала защита
 } zigbee_alert_type_t;
 
 /**
- * @brief Структура данных конфигурации ZigBee
+ * @brief Конфигурация ZigBee устройства
  */
 typedef struct {
-    char device_name[32];           ///< Имя устройства
-    char manufacturer[32];          ///< Производитель
-    char model[32];                 ///< Модель
-    uint16_t pan_id;                ///< ID сети PAN
-    uint8_t channel;                ///< Канал ZigBee (по умолчанию 15)
-    zigbee_device_type_t dev_type;  ///< Тип устройства
+    const char *device_name;    // Имя устройства
+    const char *manufacturer;   // Производитель
+    const char *model;          // Модель
+    uint16_t pan_id;            // Идентификатор сети
+    uint8_t channel;            // Номер канала
+    zigbee_device_type_t dev_type; // Тип устройства
 } zigbee_config_t;
 
 /**
- * @brief Инициализация ZigBee
+ * @brief Инициализация модуля ZigBee
  * 
- * @param config Конфигурация ZigBee
+ * @param config Конфигурация устройства
  * @return esp_err_t ESP_OK при успешной инициализации
  */
-esp_err_t zigbee_init(zigbee_config_t *config);
+esp_err_t zigbee_init(const zigbee_config_t *config);
 
 /**
- * @brief Запуск ZigBee стека
+ * @brief Запуск модуля ZigBee
  * 
  * @return esp_err_t ESP_OK при успешном запуске
  */
 esp_err_t zigbee_start(void);
 
 /**
- * @brief Остановка ZigBee стека
+ * @brief Остановка модуля ZigBee
  * 
  * @return esp_err_t ESP_OK при успешной остановке
  */
 esp_err_t zigbee_stop(void);
 
 /**
- * @brief Отправка команды открытия окна через ZigBee
+ * @brief Получение текущего состояния подключения ZigBee
  * 
- * @param mode Режим окна
- * @return esp_err_t ESP_OK при успешной отправке
+ * @return zigbee_state_t Текущее состояние подключения
  */
-esp_err_t zigbee_send_window_mode(window_mode_t mode);
+zigbee_state_t zigbee_get_state(void);
 
 /**
- * @brief Отправка команды управления зазором окна через ZigBee
+ * @brief Активация режима сопряжения
  * 
- * @param percentage Процент открытия (0-100)
- * @return esp_err_t ESP_OK при успешной отправке
+ * @param duration_sec Длительность режима в секундах
+ * @return esp_err_t ESP_OK при успешной активации
  */
-esp_err_t zigbee_send_gap_position(uint8_t percentage);
+esp_err_t zigbee_enable_pairing_mode(uint16_t duration_sec);
 
 /**
- * @brief Отправка обновления состояния в сеть ZigBee
+ * @brief Обработка входящих команд ZigBee
+ * 
+ * @return esp_err_t ESP_OK при успешной обработке
+ */
+esp_err_t zigbee_process_incoming_commands(void);
+
+/**
+ * @brief Отправка состояния устройства через ZigBee
  * 
  * @return esp_err_t ESP_OK при успешной отправке
  */
 esp_err_t zigbee_report_state(void);
 
 /**
- * @brief Отправка уведомления о событии через ZigBee
+ * @brief Отправка режима окна через ZigBee
+ * 
+ * @param mode Режим окна
+ * @return esp_err_t ESP_OK при успешной отправке
+ */
+esp_err_t zigbee_send_window_mode(uint8_t mode);
+
+/**
+ * @brief Отправка положения зазора через ZigBee
+ * 
+ * @param gap_percentage Процент открытия
+ * @return esp_err_t ESP_OK при успешной отправке
+ */
+esp_err_t zigbee_send_gap_position(uint8_t gap_percentage);
+
+/**
+ * @brief Отправка уведомления через ZigBee
  * 
  * @param alert_type Тип уведомления
- * @param value Дополнительные данные уведомления (если нужно)
+ * @param value Значение (зависит от типа уведомления)
  * @return esp_err_t ESP_OK при успешной отправке
  */
 esp_err_t zigbee_send_alert(zigbee_alert_type_t alert_type, uint8_t value);
 
-/**
- * @brief Получение текущего состояния ZigBee
- * 
- * @return zigbee_state_t Текущее состояние ZigBee
- */
-zigbee_state_t zigbee_get_state(void);
-
-/**
- * @brief Включение режима сопряжения ZigBee
- * 
- * @param duration_seconds Длительность режима сопряжения в секундах
- * @return esp_err_t ESP_OK при успешном включении режима
- */
-esp_err_t zigbee_enable_pairing_mode(uint16_t duration_seconds);
-
-/**
- * @brief Обработчик входящих команд ZigBee
- * 
- * @note Эта функция вызывается автоматически при получении команды
- */
-void zigbee_process_incoming_commands(void);
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* ZIGBEE_HANDLER_H */ 

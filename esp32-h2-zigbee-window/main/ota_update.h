@@ -10,6 +10,10 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 /**
  * @brief Состояние OTA-обновления
  */
@@ -105,5 +109,9 @@ esp_err_t ota_get_firmware_version(char *version, size_t version_len);
  * @note Эта функция вызывается автоматически в отдельной задаче
  */
 void ota_task_handler(void *pvParameter);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* OTA_UPDATE_H */ 
